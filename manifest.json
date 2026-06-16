@@ -1,0 +1,10 @@
+{
+	"id": "local-history",
+	"name": "Local History",
+	"version": "1.0.0",
+	"minAppVersion": "1.12.0",
+	"description": "ローカル 及び Syncのバージョン履歴",
+	"author": "ときくん",
+	"authorUrl": "https://github.com/toki1703",
+	"isDesktopOnly": false
+}
