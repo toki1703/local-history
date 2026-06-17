@@ -672,13 +672,14 @@ class LocalHistorySettingTab extends obsidian.PluginSettingTab {
 
         new obsidian.Setting(containerEl)
             .setName('ローカル履歴を初期化')
-            .setDesc(`.git/local-history/ に Git 形式のディレクトリ構造（objects/, refs/, logs/ など）を作成します。既存データは変更されません。`)
+            .setDesc(`Git 形式のディレクトリ構造（objects/, refs/, logs/ など）を作成し、Sync の除外フォルダーを .gitignore に追記します。既存データは変更されません。`)
             .addButton(btn => btn
                 .setButtonText('初期化')
                 .setCta()
                 .onClick(async () => {
                     await this.plugin._initHistoryRepo();
-                    new obsidian.Notice('ローカル履歴リポジトリを初期化しました');
+                    const n = this.plugin._getSyncIgnoreFolders().length;
+                    new obsidian.Notice(`初期化完了${n ? `・.gitignore に ${n} フォルダーを追記しました` : ''}`);
                 })
             );
 
@@ -844,7 +845,34 @@ class LocalHistoryPlugin extends obsidian.Plugin {
         await maybeWrite(`${r}/description`, 'Local history repository\n');
         await maybeWrite(`${r}/info/exclude`, '# local-history exclude patterns\n');
         await maybeWrite(`${r}/logs/HEAD`, '');
+        await this._updateGitignore();
         this._repoInited = true;
+    }
+
+    _getSyncIgnoreFolders() {
+        try {
+            const folders = this.app.internalPlugins?.plugins?.sync?.instance?.ignoreFolders;
+            return Array.isArray(folders) ? folders.filter(f => typeof f === 'string' && f) : [];
+        } catch { return []; }
+    }
+
+    async _updateGitignore() {
+        const a = this.app.vault.adapter;
+        const syncFolders = this._getSyncIgnoreFolders();
+        if (syncFolders.length === 0) return;
+
+        let existing = '';
+        try { existing = await a.read('.gitignore'); } catch {}
+
+        const existingLines = new Set(existing.split('\n').map(l => l.trim()));
+        const toAdd = syncFolders.filter(f => {
+            const norm = f.startsWith('/') ? f : `/${f}`;
+            return !existingLines.has(f) && !existingLines.has(norm) && !existingLines.has(`${norm}/`);
+        });
+        if (toAdd.length === 0) return;
+
+        const section = '\n# Obsidian Sync ignored folders\n' + toAdd.map(f => `/${f}/`).join('\n') + '\n';
+        await a.write('.gitignore', existing.trimEnd() + section);
     }
 
     async _ensureHistoryRepo() {
