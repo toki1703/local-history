@@ -683,6 +683,31 @@ class LocalHistorySettingTab extends obsidian.PluginSettingTab {
             );
 
         new obsidian.Setting(containerEl)
+            .setName('すべてのファイルを追加')
+            .setDesc('保管庫内のすべての対象ファイル (.md / .canvas / .base) のスナップショットを作成します。前回のスナップショットと内容が同じファイルはスキップされます。git add . に相当します。')
+            .addButton(btn => {
+                btn.setButtonText('すべて追加')
+                    .onClick(async () => {
+                        btn.setButtonText('実行中...').setDisabled(true);
+                        const notice = new obsidian.Notice('スナップショットを作成中...', 0);
+                        try {
+                            const { total, added, skipped, errors } = await this.plugin._snapAll(
+                                (cur, tot, path) => { notice.setMessage(`処理中 ${cur}/${tot}: ${path}`); }
+                            );
+                            notice.hide();
+                            new obsidian.Notice(
+                                `完了: ${added}件追加 / ${skipped}件スキップ${errors ? ` / ${errors}件エラー` : ''} (合計 ${total}件)`
+                            );
+                        } catch (e) {
+                            notice.hide();
+                            new obsidian.Notice('スナップショットの作成に失敗しました');
+                        } finally {
+                            btn.setButtonText('すべて追加').setDisabled(false);
+                        }
+                    });
+            });
+
+        new obsidian.Setting(containerEl)
             .setName('Max File Entries')
             .setDesc('ファイルごとのローカル ファイル履歴エントリの最大数を制御します。ローカル ファイル履歴エントリ数がファイルのこの値を超えると、最古のエントリが破棄されます。')
             .addText(text => text
@@ -976,6 +1001,31 @@ class LocalHistoryPlugin extends obsidian.Plugin {
             console.warn('[LocalHistory] Sync next page:', e);
             return { items: [], more: false, cursor: null };
         }
+    }
+
+    // ---- Snapshot all vault files (git add . equivalent) ----
+    async _snapAll(onProgress) {
+        const files = this.app.vault.getFiles().filter(f => SUPPORTED_EXT.has(f.extension));
+        let added = 0, skipped = 0, errors = 0;
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            if (onProgress) onProgress(i + 1, files.length, file.path);
+            try {
+                const content = await this.app.vault.read(file);
+                const snaps = await this.getSnapshots(file.path);
+                const sorted = snaps.sort((a, b) => b.ts - a.ts);
+                if (sorted.length > 0) {
+                    const lastContent = await this.getSnapshotContent(file.path, sorted[0].ts);
+                    if (lastContent === content) { skipped++; continue; }
+                }
+                await this._writeSnap(file.path, content);
+                this._statusMap.set(file.path, { letter: 'S', colorCls: 'lh-status-saved' });
+                added++;
+            } catch { errors++; }
+        }
+        this._decorate();
+        this._refreshViews();
+        return { total: files.length, added, skipped, errors };
     }
 
     // ---- Local snapshots ----
