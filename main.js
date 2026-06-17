@@ -774,7 +774,16 @@ class LocalHistoryPlugin extends obsidian.Plugin {
                 this._syncTimers.delete(file.path);
                 this._checkSyncViews(file);
             }, 2500));
-            this._statusMap.set(file.path, { letter: 'M', colorCls: 'lh-status-modified' });
+            if (this._statusMap.get(file.path)?.letter !== 'U') {
+                this._statusMap.set(file.path, { letter: 'M', colorCls: 'lh-status-modified' });
+            }
+            clearTimeout(this._decorateTimer);
+            this._decorateTimer = setTimeout(() => this._decorate(), 200);
+        }));
+
+        this.registerEvent(this.app.vault.on('create', file => {
+            if (!(file instanceof obsidian.TFile) || !SUPPORTED_EXT.has(file.extension)) return;
+            this._statusMap.set(file.path, { letter: 'U', colorCls: 'lh-status-untracked' });
             clearTimeout(this._decorateTimer);
             this._decorateTimer = setTimeout(() => this._decorate(), 200);
         }));
@@ -867,12 +876,17 @@ class LocalHistoryPlugin extends obsidian.Plugin {
                 } catch {}
             }
         } catch {}
+        for (const file of this.app.vault.getFiles()) {
+            if (SUPPORTED_EXT.has(file.extension) && !this._statusMap.has(file.path)) {
+                this._statusMap.set(file.path, { letter: 'U', colorCls: 'lh-status-untracked' });
+            }
+        }
     }
 
     _clearDecorations() {
         document.querySelectorAll('.lh-status-letter').forEach(el => el.remove());
         document.querySelectorAll('.tree-item-inner[class*="lh-status-"]').forEach(el => {
-            el.classList.remove('lh-status-saved', 'lh-status-modified');
+            el.classList.remove('lh-status-saved', 'lh-status-modified', 'lh-status-untracked');
         });
     }
 
@@ -1045,7 +1059,7 @@ class LocalHistoryPlugin extends obsidian.Plugin {
                 }
             }
             const { ts: newTs, objPath } = await this._writeSnap(file.path, content, mergedTs);
-            this._statusMap.set(file.path, { letter: 'S', colorCls: 'lh-status-saved' });
+            // this._statusMap.set(file.path, { letter: 'S', colorCls: 'lh-status-saved' });
             this._decorate();
             this._notifyLocalSnap(file, newTs, objPath, mergedTs);
         } catch (e) { console.error('[LocalHistory]', e); }
@@ -1055,7 +1069,7 @@ class LocalHistoryPlugin extends obsidian.Plugin {
         try {
             const content = await this.app.vault.read(file);
             await this._writeSnap(file.path, content);
-            this._statusMap.set(file.path, { letter: 'S', colorCls: 'lh-status-saved' });
+            // this._statusMap.set(file.path, { letter: 'S', colorCls: 'lh-status-saved' });
             this._decorate();
             this._refreshViews();
         } catch (e) { console.error('[LocalHistory]', e); }

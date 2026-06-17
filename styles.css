@@ -402,6 +402,10 @@
 /* M: Modified — 最後のスナップショット後に変更 */
 .lh-status-modified { color: #e2c08d; }
 
+/* U: Untracked — 未追加 */
+.lh-status-untracked { color: #858585; }
+
 /* ファイル名テキストへの色反映 */
-.tree-item-inner.lh-status-saved    { color: #73c991; }
-.tree-item-inner.lh-status-modified { color: #e2c08d; }
+.tree-item-inner.lh-status-saved      { color: #73c991; }
+.tree-item-inner.lh-status-modified   { color: #e2c08d; }
+.tree-item-inner.lh-status-untracked  { color: #858585; }
