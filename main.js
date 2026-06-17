@@ -737,6 +737,7 @@ class LocalHistoryPlugin extends obsidian.Plugin {
     }
 
     onunload() {
+        this.app.workspace.detachLeavesOfType(VIEW_TYPE);
         for (const t of this._timers.values()) clearTimeout(t);
         for (const t of this._syncTimers.values()) clearTimeout(t);
     }
