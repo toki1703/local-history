@@ -385,3 +385,23 @@
     border-bottom: 1px solid var(--background-modifier-border);
     user-select: none;
 }
+
+/* ===== File Explorer Status Badges ===== */
+
+.lh-status-letter {
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: auto;
+    padding-left: 6px;
+    flex-shrink: 0;
+}
+
+/* S: Saved — スナップショットあり */
+.lh-status-saved    { color: #73c991; }
+
+/* M: Modified — 最後のスナップショット後に変更 */
+.lh-status-modified { color: #e2c08d; }
+
+/* ファイル名テキストへの色反映 */
+.tree-item-inner.lh-status-saved    { color: #73c991; }
+.tree-item-inner.lh-status-modified { color: #e2c08d; }
