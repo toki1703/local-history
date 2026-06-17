@@ -3,7 +3,7 @@
 var obsidian = require('obsidian');
 
 const VIEW_TYPE = 'local-history';
-const HISTORY_ROOT = '.git/local-history';
+const HISTORY_ROOT = '.obsidian\\plugins\\local-history\\.git';
 const DEBOUNCE_MS = 2000;
 const BATCH_SIZE = 20;
 const SUPPORTED_EXT = new Set(['md', 'canvas', 'base']);
