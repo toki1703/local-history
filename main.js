@@ -3,7 +3,7 @@
 var obsidian = require('obsidian');
 
 const VIEW_TYPE = 'local-history';
-const HISTORY_ROOT = '.git';
+const HISTORY_ROOT = '.git/local-history';
 const DEBOUNCE_MS = 2000;
 const BATCH_SIZE = 20;
 const SUPPORTED_EXT = new Set(['md', 'canvas', 'base']);
@@ -16,6 +16,18 @@ const DEFAULT_SETTINGS = {
     deviceAsSource: false,
     showDiffStats: true,
 };
+
+// SHA-256 hex digest (browser SubtleCrypto)
+async function sha256hex(str) {
+    const data = new TextEncoder().encode(str);
+    const buf = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Encode a vault file path to a safe ref filename
+function encodeRefPath(filePath) {
+    return filePath.replace(/\\/g, '/').replace(/\//g, '__').replace(/[^a-zA-Z0-9._-]/g, c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+}
 
 // ---- LCS diff (line-level) ----
 function diffLines(a, b) {
@@ -459,7 +471,7 @@ class LocalHistoryView extends obsidian.ItemView {
     }
 
     // ---- apply a new local snapshot incrementally ----
-    async applyLocalSnap(filePath, newTs, mergedTs) {
+    async applyLocalSnap(filePath, newTs, objPath, mergedTs) {
         if (!this._activeFile || this._activeFile.path !== filePath) return;
         if (!this._listEl) { this.refresh(); return; }
         const gen = this._renderGen;
@@ -478,7 +490,7 @@ class LocalHistoryView extends obsidian.ItemView {
         }
 
         // Prepend new local item
-        const newEntry = { source: 'local', ts: newTs, data: { ts: newTs, path: `${HISTORY_ROOT}/${filePath}/${newTs}` } };
+        const newEntry = { source: 'local', ts: newTs, data: { ts: newTs, path: objPath } };
         this._allItems = [newEntry, ...this._allItems].sort((a, b) => b.ts - a.ts);
         this._renderedCount += 1;
 
@@ -658,6 +670,18 @@ class LocalHistorySettingTab extends obsidian.PluginSettingTab {
         containerEl.createEl('h2', { text: 'ローカル保存' });
 
         new obsidian.Setting(containerEl)
+            .setName('ローカル履歴を初期化')
+            .setDesc(`.git/local-history/ に Git 形式のディレクトリ構造（objects/, refs/, logs/ など）を作成します。既存データは変更されません。`)
+            .addButton(btn => btn
+                .setButtonText('初期化')
+                .setCta()
+                .onClick(async () => {
+                    await this.plugin._initHistoryRepo();
+                    new obsidian.Notice('ローカル履歴リポジトリを初期化しました');
+                })
+            );
+
+        new obsidian.Setting(containerEl)
             .setName('Max File Entries')
             .setDesc('ファイルごとのローカル ファイル履歴エントリの最大数を制御します。ローカル ファイル履歴エントリ数がファイルのこの値を超えると、最古のエントリが破棄されます。')
             .addText(text => text
@@ -706,6 +730,7 @@ class LocalHistoryPlugin extends obsidian.Plugin {
         await this.loadSettings();
         this._timers = new Map();
         this._syncTimers = new Map();
+        this._repoInited = false;
         this.registerView(VIEW_TYPE, leaf => new LocalHistoryView(leaf, this));
         this.addSettingTab(new LocalHistorySettingTab(this.app, this));
 
@@ -749,6 +774,38 @@ class LocalHistoryPlugin extends obsidian.Plugin {
         await this.saveData(this.settings);
     }
 
+    async _initHistoryRepo() {
+        const a = this.app.vault.adapter;
+        const r = HISTORY_ROOT;
+        const dirs = [
+            r,
+            `${r}/objects`, `${r}/objects/info`, `${r}/objects/pack`,
+            `${r}/refs`, `${r}/refs/heads`, `${r}/refs/tags`,
+            `${r}/refs/remotes`, `${r}/refs/remotes/origin`,
+            `${r}/logs`, `${r}/logs/refs`, `${r}/logs/refs/heads`,
+            `${r}/hooks`, `${r}/info`,
+        ];
+        for (const d of dirs) {
+            if (!(await a.exists(d))) try { await a.mkdir(d); } catch {}
+        }
+        const maybeWrite = async (p, c) => { if (!(await a.exists(p))) await a.write(p, c); };
+        await maybeWrite(`${r}/HEAD`, 'ref: refs/heads/main\n');
+        await maybeWrite(`${r}/config`, '[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n');
+        await maybeWrite(`${r}/description`, 'Local history repository\n');
+        await maybeWrite(`${r}/info/exclude`, '# local-history exclude patterns\n');
+        await maybeWrite(`${r}/logs/HEAD`, '');
+        this._repoInited = true;
+    }
+
+    async _ensureHistoryRepo() {
+        if (this._repoInited) return;
+        if (!(await this.app.vault.adapter.exists(`${HISTORY_ROOT}/HEAD`))) {
+            await this._initHistoryRepo();
+        } else {
+            this._repoInited = true;
+        }
+    }
+
     async _openPanel() {
         const ws = this.app.workspace;
         const leaves = ws.getLeavesOfType(VIEW_TYPE);
@@ -764,9 +821,9 @@ class LocalHistoryPlugin extends obsidian.Plugin {
         }
     }
 
-    _notifyLocalSnap(file, newTs, mergedTs) {
+    _notifyLocalSnap(file, newTs, objPath, mergedTs) {
         for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
-            if (leaf.view instanceof LocalHistoryView) leaf.view.applyLocalSnap(file.path, newTs, mergedTs);
+            if (leaf.view instanceof LocalHistoryView) leaf.view.applyLocalSnap(file.path, newTs, objPath, mergedTs);
         }
     }
 
@@ -876,8 +933,8 @@ class LocalHistoryPlugin extends obsidian.Plugin {
                     try { await this.app.vault.adapter.remove(last.path); mergedTs = last.ts; } catch {}
                 }
             }
-            const newTs = await this._writeSnap(file.path, content);
-            this._notifyLocalSnap(file, newTs, mergedTs);
+            const { ts: newTs, objPath } = await this._writeSnap(file.path, content, mergedTs);
+            this._notifyLocalSnap(file, newTs, objPath, mergedTs);
         } catch (e) { console.error('[LocalHistory]', e); }
     }
 
@@ -889,13 +946,39 @@ class LocalHistoryPlugin extends obsidian.Plugin {
         } catch (e) { console.error('[LocalHistory]', e); }
     }
 
-    async _writeSnap(filePath, content) {
+    async _writeSnap(filePath, content, mergedTs = null) {
+        await this._ensureHistoryRepo();
         const ts = Date.now();
-        const dir = `${HISTORY_ROOT}/${filePath}`;
-        await this._mkdirp(dir);
-        await this.app.vault.adapter.write(`${dir}/${ts}`, content);
+        const hash = await sha256hex(`blob ${content.length}\0${content}`);
+
+        // Store object under objects/{hash[0:2]}/{hash[2:]}
+        const objDir = `${HISTORY_ROOT}/objects/${hash.slice(0, 2)}`;
+        await this._mkdirp(objDir);
+        const objPath = `${objDir}/${hash.slice(2)}`;
+        const a = this.app.vault.adapter;
+        if (!(await a.exists(objPath))) {
+            await a.write(objPath, content);
+        }
+
+        // Update per-file ref: refs/heads/{encodedFilePath}
+        const refPath = `${HISTORY_ROOT}/refs/heads/${encodeRefPath(filePath)}`;
+        let entries = [];
+        try { entries = JSON.parse(await a.read(refPath)); } catch {}
+        if (mergedTs !== null) entries = entries.filter(e => e.ts !== mergedTs);
+        entries.unshift({ ts, hash });
+        await a.write(refPath, JSON.stringify(entries));
+
+        // Append to reflog: logs/refs/heads/{encodedFilePath}
+        const logDir = `${HISTORY_ROOT}/logs/refs/heads`;
+        await this._mkdirp(logDir);
+        const logPath = `${logDir}/${encodeRefPath(filePath)}`;
+        const prev = entries.length > 1 ? entries[1].hash : '0'.repeat(64);
+        let log = '';
+        try { log = await a.read(logPath); } catch {}
+        await a.write(logPath, `${log}${prev} ${hash} Local-History ${ts} +0000\tsnapshot: ${filePath}\n`);
+
         await this._prune(filePath);
-        return ts;
+        return { ts, objPath };
     }
 
     async _mkdirp(path) {
@@ -909,27 +992,46 @@ class LocalHistoryPlugin extends obsidian.Plugin {
     }
 
     async getSnapshots(filePath) {
-        const dir = `${HISTORY_ROOT}/${filePath}`;
+        const refPath = `${HISTORY_ROOT}/refs/heads/${encodeRefPath(filePath)}`;
         const a = this.app.vault.adapter;
-        if (!(await a.exists(dir))) return [];
+        if (!(await a.exists(refPath))) return [];
         try {
-            const { files } = await a.list(dir);
-            return files.map(f => {
-                const ts = parseInt(f.replace(/\\/g, '/').split('/').pop(), 10);
-                return isNaN(ts) ? null : { ts, path: f };
-            }).filter(Boolean);
+            const data = JSON.parse(await a.read(refPath));
+            const valid = [], keep = [];
+            for (const { ts, hash } of data) {
+                const objPath = `${HISTORY_ROOT}/objects/${hash.slice(0, 2)}/${hash.slice(2)}`;
+                if (await a.exists(objPath)) {
+                    valid.push({ ts, hash, path: objPath });
+                    keep.push({ ts, hash });
+                }
+            }
+            if (keep.length !== data.length) {
+                await a.write(refPath, JSON.stringify(keep));
+            }
+            return valid;
         } catch { return []; }
     }
 
     async getSnapshotContent(filePath, ts) {
-        return this.app.vault.adapter.read(`${HISTORY_ROOT}/${filePath}/${ts}`);
+        const snaps = await this.getSnapshots(filePath);
+        const snap = snaps.find(s => s.ts === ts);
+        if (!snap) throw new Error(`Snapshot not found: ${filePath}@${ts}`);
+        return this.app.vault.adapter.read(snap.path);
     }
 
     async _prune(filePath) {
-        const snaps = await this.getSnapshots(filePath);
-        if (snaps.length <= this.settings.maxEntries) return;
-        const old = snaps.sort((a, b) => a.ts - b.ts).slice(0, snaps.length - this.settings.maxEntries);
-        for (const s of old) { try { await this.app.vault.adapter.remove(s.path); } catch {} }
+        const refPath = `${HISTORY_ROOT}/refs/heads/${encodeRefPath(filePath)}`;
+        const a = this.app.vault.adapter;
+        try {
+            let entries = JSON.parse(await a.read(refPath));
+            if (entries.length <= this.settings.maxEntries) return;
+            const toRemove = entries.slice(this.settings.maxEntries);
+            entries = entries.slice(0, this.settings.maxEntries);
+            for (const { hash } of toRemove) {
+                try { await a.remove(`${HISTORY_ROOT}/objects/${hash.slice(0, 2)}/${hash.slice(2)}`); } catch {}
+            }
+            await a.write(refPath, JSON.stringify(entries));
+        } catch {}
     }
 }
 
